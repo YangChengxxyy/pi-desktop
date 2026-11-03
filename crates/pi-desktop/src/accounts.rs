@@ -4,8 +4,9 @@
 //! It drives its own pi process with the accounts bridge extension loaded
 //! (see `pi-bridge/extension/accounts.ts`), so a login never waits behind a
 //! session turn and works before any session can start (pi starts without
-//! credentials). The process loads no other extensions, tools, or sessions
-//! and makes no model calls.
+//! credentials). The process loads the user's installed extensions, which
+//! can register providers, but no tools, MCP servers, or sessions, and makes
+//! no model calls.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -223,7 +224,7 @@ impl AccountsView {
 	fn on_event(&mut self, event: BridgeEvent, cx: &mut Context<Self>) {
 		match event {
 			BridgeEvent::Providers { providers, credentials } => {
-				self.providers = providers;
+				self.providers = login::with_unloaded(providers, &credentials);
 				self.credentials = credentials;
 				self.busy = false;
 			},

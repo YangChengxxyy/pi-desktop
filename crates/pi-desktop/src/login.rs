@@ -149,6 +149,25 @@ impl BridgeEvent {
 	}
 }
 
+/// Adds a row for each stored credential whose provider is not loaded (its
+/// extension was removed), as pi's TUI `/logout` lists them, so it can still
+/// be removed. Such a row cannot log in.
+pub fn with_unloaded(mut providers: Vec<Provider>, credentials: &[Credential]) -> Vec<Provider> {
+	for credential in credentials {
+		if !providers.iter().any(|p| p.id == credential.provider_id) {
+			providers.push(Provider {
+				id:         credential.provider_id.clone(),
+				name:       format!("{}（未加载）", credential.provider_id),
+				oauth:      None,
+				api_key:    None,
+				configured: true,
+				source:     None,
+			});
+		}
+	}
+	providers
+}
+
 /// Providers matching every whitespace-separated term of `query` (in the id
 /// or the name, case-insensitively); configured ones first, then by name.
 pub fn filter<'a>(providers: &'a [Provider], query: &str) -> Vec<&'a Provider> {
@@ -288,6 +307,21 @@ mod tests {
 		assert!(matches!(failed, Some(BridgeEvent::LoginFailed { cancelled: true, .. })));
 		assert_eq!(BridgeEvent::parse("{\"other\":1}"), None);
 		assert_eq!(BridgeEvent::parse("not json"), None);
+	}
+
+	#[::core::prelude::v1::test]
+	fn stored_credentials_without_a_provider_stay_listed_for_logout() {
+		let loaded = Provider { id: "openai".into(), name: "OpenAI".into(), oauth: None, api_key: None, configured: true, source: None };
+		let credentials = [
+			Credential { provider_id: "openai".into(), kind: AuthType::ApiKey },
+			Credential { provider_id: "kiro".into(), kind: AuthType::Oauth },
+		];
+		let rows = with_unloaded(vec![loaded.clone()], &credentials);
+		assert_eq!(rows.len(), 2, "a loaded provider is not duplicated");
+		assert_eq!(rows[0], loaded);
+		assert_eq!(rows[1].id, "kiro");
+		assert!(rows[1].configured && !rows[1].can_log_in());
+		assert_eq!(filter(&rows, "kiro").len(), 1, "searchable by id");
 	}
 
 	#[::core::prelude::v1::test]
