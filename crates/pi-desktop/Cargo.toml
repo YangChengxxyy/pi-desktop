@@ -1,0 +1,19 @@
+[package]
+name = "pi-desktop"
+description = "Desktop client for pi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pi-rpc.workspace = true
+pi-bridge.workspace = true
+pi-store.workspace = true
+async-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+gpui-kit = "0.8.1"
+
+[dev-dependencies]
+gpui-kit = { version = "0.8.1", features = ["test-support"] }
