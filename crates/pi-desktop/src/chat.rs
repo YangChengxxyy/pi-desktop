@@ -1891,9 +1891,13 @@ impl ChatView {
 			.child(fields)
 	}
 
-	fn render_widgets(&self, below: bool, cx: &App) -> impl IntoElement {
+	/// Extension widgets above or below the composer; `None` when there are
+	/// none, so the composer column's gap stays as in omp-desktop.
+	fn render_widgets(&self, below: bool, cx: &App) -> Option<impl IntoElement> {
 		let p = theme::palette(cx);
-		div().flex().flex_col().gap_1().children(self.model.widgets.iter().filter(|(_, w)| w.below == below).map(|(key, widget)| {
+		let mut widgets = self.model.widgets.iter().filter(|(_, w)| w.below == below).peekable();
+		widgets.peek()?;
+		Some(div().flex().flex_col().gap_1().children(widgets.map(|(key, widget)| {
 			div()
 				.id(SharedString::from(format!("widget-{key}")))
 				.px_3()
@@ -1907,7 +1911,7 @@ impl ChatView {
 				.text_color(rgb(p.muted_foreground))
 				.child(widget.lines.join("\n"))
 				.test_support()
-		}))
+		})))
 	}
 
 	fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1969,7 +1973,7 @@ impl ChatView {
 			.flex()
 			.flex_col()
 			.gap_2()
-			.child(self.render_widgets(false, cx))
+			.children(self.render_widgets(false, cx))
 			.child(div().flex().flex_wrap().gap_1().children(chips))
 			.when(!self.attachments.is_empty(), |col| col.child(self.render_attachments(cx)))
 			.child(
@@ -2026,7 +2030,7 @@ impl ChatView {
 							.on_click(cx.listener(|this, _, window, cx| this.send(Delivery::Normal, window, cx))),
 					),
 			)
-			.child(self.render_widgets(true, cx))
+			.children(self.render_widgets(true, cx))
 	}
 
 	fn render_notices(&self, cx: &mut Context<Self>) -> impl IntoElement {
