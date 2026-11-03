@@ -913,8 +913,12 @@ impl ChatView {
 			if let Some(done) = shell {
 				// pi registers the command's abort handle only once the shell
 				// starts, and `abort_bash` for a command not yet started is a
-				// no-op; repeat it until the `bash` call returns.
+				// no-op; repeat it until the `bash` call returns, for at most 10s.
+				let deadline = std::time::Instant::now() + Duration::from_secs(10);
 				while !done.load(std::sync::atomic::Ordering::Acquire) {
+					if std::time::Instant::now() >= deadline {
+						return Err(pi_rpc::Error::Timeout { command: "abort_bash".into() });
+					}
 					client.request("abort_bash", Value::Null, Some(Duration::from_secs(10)))?;
 					std::thread::sleep(Duration::from_millis(100));
 				}

@@ -71,7 +71,8 @@ impl AccountsView {
 		let dir = std::env::temp_dir().join("pi-desktop");
 		let extension = pi_bridge::accounts_extension(&dir);
 		let mut extra_args: Vec<String> =
-			["--no-session", "--no-extensions", "--no-tools", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve"]
+			// Installed extensions stay on: they register providers too.
+			["--no-session", "--no-tools", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve"]
 				.map(String::from)
 				.to_vec();
 		let failed = match &extension {
