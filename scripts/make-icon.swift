@@ -1,7 +1,7 @@
 // Renders the app icon into an .iconset and builds AppIcon.icns with iconutil.
 //   swift scripts/make-icon.swift crates/pi-desktop/assets/AppIcon.icns
 // A blue rounded square (the design's accent, #123BB5 → #3B6CF0) with a
-// white terminal prompt "›_". Re-run after changing the drawing; the .icns
+// white serif pi glyph "π". Re-run after changing the drawing; the .icns
 // is committed so bundling needs no Swift.
 import AppKit
 
@@ -34,18 +34,37 @@ func render(_ px: Int) -> Data {
 	let gradient = CGGradient(colorsSpace: nil, colors: [color(0x3B6CF0), color(0x123BB5)] as CFArray, locations: [0, 1])!
 	ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: body.maxY), end: CGPoint(x: 0, y: body.minY), options: [])
 	ctx.restoreGState()
-	// "›" chevron and "_" cursor.
+	// "π" drawn as three strokes: top bar with small serifs, two legs with
+	// rounded feet — the right leg curves out at the bottom like a serif π.
 	ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
-	ctx.setLineWidth(s * 78 / 1024)
 	ctx.setLineCap(.round)
 	ctx.setLineJoin(.round)
 	let u = s / 1024
-	ctx.move(to: CGPoint(x: 300 * u, y: 680 * u))
-	ctx.addLine(to: CGPoint(x: 480 * u, y: 512 * u))
-	ctx.addLine(to: CGPoint(x: 300 * u, y: 344 * u))
+	// Top bar (with short serif ticks at both ends).
+	ctx.setLineWidth(s * 72 / 1024)
+	ctx.move(to: CGPoint(x: 268 * u, y: 640 * u))
+	ctx.addLine(to: CGPoint(x: 756 * u, y: 640 * u))
 	ctx.strokePath()
-	ctx.move(to: CGPoint(x: 560 * u, y: 344 * u))
-	ctx.addLine(to: CGPoint(x: 740 * u, y: 344 * u))
+	ctx.setLineWidth(s * 52 / 1024)
+	ctx.move(to: CGPoint(x: 268 * u, y: 696 * u))
+	ctx.addLine(to: CGPoint(x: 268 * u, y: 640 * u))
+	ctx.move(to: CGPoint(x: 756 * u, y: 696 * u))
+	ctx.addLine(to: CGPoint(x: 756 * u, y: 640 * u))
+	ctx.strokePath()
+	// Left leg: straight, slight italic lean, ending in a rounded foot.
+	ctx.setLineWidth(s * 68 / 1024)
+	let left = CGMutablePath()
+	left.move(to: CGPoint(x: 430 * u, y: 640 * u))
+	left.addLine(to: CGPoint(x: 400 * u, y: 372 * u))
+	left.addQuadCurve(to: CGPoint(x: 348 * u, y: 352 * u), control: CGPoint(x: 388 * u, y: 352 * u))
+	ctx.addPath(left)
+	ctx.strokePath()
+	// Right leg: straight down, then hooks right at the bottom.
+	let right = CGMutablePath()
+	right.move(to: CGPoint(x: 612 * u, y: 640 * u))
+	right.addLine(to: CGPoint(x: 588 * u, y: 396 * u))
+	right.addQuadCurve(to: CGPoint(x: 668 * u, y: 352 * u), control: CGPoint(x: 584 * u, y: 352 * u))
+	ctx.addPath(right)
 	ctx.strokePath()
 	let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
 	return rep.representation(using: .png, properties: [:])!

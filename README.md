@@ -25,7 +25,7 @@ scripts/bundle-macos.sh --no-dmg    # .app only
 scripts/bundle-macos.sh --sign "Developer ID Application: Name (TEAMID)" --notarize <profile>
 ```
 
-The ad-hoc build runs on this machine; on another Mac, Gatekeeper blocks it until it is opened with right-click → 打开 (or `xattr -dr com.apple.quarantine pi-desktop.app`). A distributable build needs a Developer ID certificate and a notarytool profile (`xcrun notarytool store-credentials <profile> --apple-id … --team-id … --password <app-specific password>`). pi is not bundled. Launched from Finder, the app takes PATH from `$SHELL -l -i` and starts the first tab in the home directory.
+The ad-hoc build runs on this machine; on another Mac, Gatekeeper blocks it until it is opened with right-click → 打开 (or `xattr -dr com.apple.quarantine pi-desktop.app`). A distributable build needs a Developer ID certificate and a notarytool profile (`xcrun notarytool store-credentials <profile> --apple-id … --team-id … --password <app-specific password>`). pi is not bundled. Launched from Finder, the app takes PATH from `$SHELL -l -i` and starts the first tab in the directory named in `~/Library/Application Support/pi-desktop/default-cwd` (one path, `~/` allowed), or the home directory when that file is missing or the path is not a directory.
 
 ## Shortcuts
 

@@ -1,6 +1,7 @@
 //! One card per tool call: header (tool, main argument, status), then a
 //! tool-specific body built from the live `ToolRun`.
 
+use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pi_store::display::ToolArgs;
@@ -61,34 +62,32 @@ impl ToolCard<'_> {
 		let (status, status_color) = self.status(p);
 		let failed = self.run.is_some_and(|run| run.status == Status::Failed);
 		let diff = self.run.and_then(ToolRun::diff);
-		let headline = self.headline();
+		let (headline, hidden_headline) = clip_lines(&self.headline(), if self.expanded { usize::MAX } else { PREVIEW_LINES });
 
 		let mut header = div()
 			.flex()
-			.items_center()
+			.items_start()
 			.gap_2()
 			.px_3()
-			.h(px(30.))
+			.py_1p5()
+			.min_h(px(30.))
 			.text_xs()
-			.child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.accent_foreground)).child(self.name.to_owned()))
+			.child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.accent_foreground)).child(self.name.to_owned()))
 			.child(
 				div()
 					.flex_1()
 					.min_w_0()
-					.overflow_hidden()
-					.whitespace_nowrap()
-					.text_ellipsis()
 					.font_family("Menlo")
 					.child(headline),
 			);
 		if let Some(diff) = &diff {
 			header = header
-				.child(div().text_color(rgb(p.success)).child(format!("+{}", diff.added)))
-				.child(div().text_color(rgb(p.danger)).child(format!("-{}", diff.removed)));
+				.child(div().flex_none().text_color(rgb(p.success)).child(format!("+{}", diff.added)))
+				.child(div().flex_none().text_color(rgb(p.danger)).child(format!("-{}", diff.removed)));
 		}
-		header = header.child(div().text_color(rgb(status_color)).child(status));
+		header = header.child(div().flex_none().text_color(rgb(status_color)).child(status));
 
-		let (body, hidden) = match (self.name, self.run, &diff) {
+		let (body, hidden_body) = match (self.name, self.run, &diff) {
 			(_, _, Some(diff)) => {
 				let (body, hidden) = render_diff(diff, p, self.expanded);
 				(Some(body), hidden)
@@ -129,6 +128,7 @@ impl ToolCard<'_> {
 			},
 			_ => (None, 0),
 		};
+		let hidden = hidden_headline + hidden_body;
 
 		div()
 			.id(("tool-card", self.id))
@@ -151,9 +151,11 @@ impl ToolCard<'_> {
 						.text_color(rgb(p.muted_foreground))
 						.cursor_pointer()
 						.child(if self.expanded { "收起".to_owned() } else { format!("展开其余 {hidden} 行") })
-						.on_click(on_toggle),
+						.on_click(on_toggle)
+						.test_support(),
 				)
 			})
+			.test_support()
 			.into_any_element()
 	}
 }
@@ -242,6 +244,7 @@ mod tests {
 	use serde_json::json;
 
 	use super::*;
+	use ::core::prelude::v1::test;
 
 	#[::core::prelude::v1::test]
 	fn headline_names_the_target() {
@@ -258,5 +261,52 @@ mod tests {
 	fn clip_counts_hidden_lines() {
 		assert_eq!(clip_lines("a\nb\nc\n", 2), ("a\nb".to_owned(), 1));
 		assert_eq!(clip_lines("a\n", 5), ("a".to_owned(), 0));
+	}
+
+	#[gpui_kit::test]
+	async fn multiline_bash_header_grows_and_clips_long_scripts(cx: &mut TestAppContext) {
+		use gpui_kit::test::TestWindowExt as _;
+
+		cx.update(gpui_kit::init);
+		cx.update(crate::theme::apply);
+
+		struct Harness;
+		impl Render for Harness {
+			fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+				let p = crate::theme::palette(cx);
+				let args = |cmd: &str| ToolArgs::Complete(json!({"command": cmd}).as_object().unwrap().clone());
+				let run = ToolRun {
+					name:    "bash".into(),
+					status:  Status::Done,
+					output:  "patched: 63\n".into(),
+					details: Value::Null,
+					started: std::time::Instant::now(),
+					elapsed: Some(std::time::Duration::from_millis(120)),
+				};
+				let single = args("echo hi");
+				let multi = args("cd ~/.pi/agent && python3 << 'EOF'\nimport pathlib, re\n\nMOVED = [\"a\", \"b\"]\nfor r in MOVED:\n    print(r)\nEOF");
+				let twenty_lines = (1..=20).map(|i| format!("echo line {i}")).collect::<Vec<_>>().join("\n");
+				let long_script = args(&twenty_lines);
+				div()
+					.w(px(600.))
+					.flex()
+					.flex_col()
+					.gap_2()
+					.child(ToolCard { id: 1, name: "bash", args: &single, run: Some(&run), expanded: false }.render(p, |_, _, _| {}))
+					.child(ToolCard { id: 2, name: "bash", args: &multi, run: Some(&run), expanded: false }.render(p, |_, _, _| {}))
+					.child(ToolCard { id: 3, name: "bash", args: &long_script, run: Some(&run), expanded: false }.render(p, |_, _, _| {}))
+			}
+		}
+
+		let (handle, _) = cx.update(|cx| gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Harness)).unwrap());
+		cx.update_window(handle, |_, window, cx| {
+			window.render_frame(cx);
+			let h1 = window.find(("tool-card", 1usize)).bounds().size.height;
+			let h2 = window.find(("tool-card", 2usize)).bounds().size.height;
+			assert!(h2 > h1 + px(60.), "multiline bash command should expand header height (single={h1:?}, multi={h2:?})");
+			assert!(window.try_find(("tool-card-more", 2usize)).is_none(), "7-line command fits within PREVIEW_LINES");
+			assert!(window.try_find(("tool-card-more", 3usize)).is_some(), "20-line command shows expand toggle");
+		})
+		.unwrap();
 	}
 }

@@ -103,6 +103,9 @@ pub struct ChatView {
 	/// row; `None` hides the popup. Esc dismisses it until the text changes.
 	completions:  Option<(Vec<slash::Suggestion>, usize)>,
 	completions_dismissed: Option<String>,
+	/// Tracks the completion popup's scroll offset, both to keep the selected
+	/// row in view and to know when its own scroll limits are reached.
+	completions_scroll: ScrollHandle,
 	/// Images waiting in the composer, sent with the next message.
 	attachments:  Vec<attachments::Attachment>,
 	/// Decoded transcript images by (row, block); cleared with the list.
@@ -156,6 +159,7 @@ impl ChatView {
 			attachments: Vec::new(),
 			completions: None,
 			completions_dismissed: None,
+			completions_scroll: ScrollHandle::new(),
 			images: Default::default(),
 			expanded: Default::default(),
 			shell_done: Default::default(),
@@ -992,6 +996,8 @@ impl ChatView {
 			if let Some((_, selected)) = &mut this.completions {
 				*selected = index;
 			}
+			// Keep the selected row inside the popup's scroll viewport.
+			this.completions_scroll.scroll_to_item(index);
 		};
 		match key {
 			CompletionKey::Up => select(self, selected.checked_sub(1).unwrap_or(count - 1)),
@@ -1043,6 +1049,20 @@ impl ChatView {
 				.w(px(520.))
 				.max_h(px(280.))
 				.overflow_y_scroll()
+				.track_scroll(&self.completions_scroll)
+				// Scroll the popup itself; the event reaches the chat list
+				// only past the popup's own scroll limits.
+				.on_scroll({
+					let scroll = self.completions_scroll.clone();
+					move |event: &ScrollEvent, _, cx| {
+						let delta_y = event.delta.pixel_delta(px(20.)).y;
+						let offset = scroll.offset();
+						let min_y = -scroll.max_offset().y;
+						if (delta_y < Pixels::ZERO && offset.y > min_y) || (delta_y > Pixels::ZERO && offset.y < Pixels::ZERO) {
+							cx.stop_propagation();
+						}
+					}
+				})
 				.rounded(px(8.))
 				.border_1()
 				.border_color(rgb(p.border))
@@ -1439,7 +1459,10 @@ impl ChatView {
 				let output: String = view.blocks.iter().filter_map(|b| if let Block::Output(t) = b { Some(t.as_str()) } else { None }).collect();
 				let running = self.model.shell_row == Some(index);
 				let expanded = self.expanded.contains(&(index, 0));
-				let (text, hidden) = clip_lines(&output, if expanded { usize::MAX } else { 14 });
+				let limit = if expanded { usize::MAX } else { 14 };
+				let (cmd, hidden_cmd) = clip_lines(&format!("$ {command}"), limit);
+				let (text, hidden_out) = clip_lines(&output, limit);
+				let hidden = hidden_cmd + hidden_out;
 				let failed = !running && (*cancelled || exit_code.is_some_and(|c| c != 0));
 				let (status, color) = if running {
 					("运行中".to_owned(), p.primary)
@@ -1461,14 +1484,15 @@ impl ChatView {
 							.child(
 								div()
 									.flex()
-									.items_center()
+									.items_start()
 									.gap_2()
 									.px_3()
-									.h(px(30.))
+									.py_1p5()
+									.min_h(px(30.))
 									.text_xs()
-									.child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.accent_foreground)).child(if *excluded { "!!" } else { "!" }))
-									.child(div().flex_1().min_w_0().truncate().font_family("Menlo").child(format!("$ {command}")))
-									.child(div().text_color(rgb(color)).child(status)),
+									.child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.accent_foreground)).child(if *excluded { "!!" } else { "!" }))
+									.child(div().flex_1().min_w_0().font_family("Menlo").child(cmd))
+									.child(div().flex_none().text_color(rgb(color)).child(status)),
 							)
 							.when(!text.trim().is_empty(), |card| {
 								card.child(

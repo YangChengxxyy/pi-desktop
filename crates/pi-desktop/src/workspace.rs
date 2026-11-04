@@ -6,7 +6,7 @@
 //! · ⌘M pick a model · ⌘T cycle the thinking level · ⌘⇧L accounts.
 
 use std::{
-	collections::HashSet,
+	collections::{HashMap, HashSet},
 	path::{Path, PathBuf},
 	time::{Duration, SystemTime},
 };
@@ -31,29 +31,136 @@ use crate::theme::{self, ThemeChoice};
 /// only reads files whose size or mtime changed, so polling is cheap. Tabs
 /// also trigger a rescan when their session file appears or a run settles.
 const RESCAN_EVERY: Duration = Duration::from_secs(3);
+/// Sessions shown per sidebar folder before "show more".
+const GROUP_PREVIEW_SESSIONS: usize = 5;
+
+actions!(
+	workspace,
+	[
+		Hide,
+		HideOthers,
+		ShowAll,
+		Quit,
+		NewTab,
+		NewTabInDir,
+		CloseTab,
+		SearchSessions,
+		ToggleSidebar,
+		TogglePanel,
+		CommandPalette,
+		ModelPalette,
+		CycleThinking,
+		OpenAccounts,
+		MinimizeWindow,
+		ZoomWindow,
+		ToggleFullScreen,
+		NextTab,
+		PreviousTab,
+	]
+);
+
+/// Registers the native application menu bar (including the `Window` menu
+/// that macOS populates with window controls and open windows) and global
+/// app-level actions (`⌘Q`, `⌘H`, `⌥⌘H`).
+pub fn init_menus(cx: &mut App) {
+	use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+
+	cx.on_action(|_: &Hide, cx| cx.hide());
+	cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+	cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+	cx.on_action(|_: &Quit, cx| cx.quit());
+
+	cx.bind_keys([
+		KeyBinding::new("cmd-h", Hide, None),
+		KeyBinding::new("alt-cmd-h", HideOthers, None),
+		KeyBinding::new("cmd-q", Quit, None),
+		KeyBinding::new("cmd-n", NewTab, None),
+		KeyBinding::new("cmd-o", NewTabInDir, None),
+		KeyBinding::new("cmd-w", CloseTab, None),
+		KeyBinding::new("cmd-p", SearchSessions, None),
+		KeyBinding::new("cmd-b", ToggleSidebar, None),
+		KeyBinding::new("cmd-j", TogglePanel, None),
+		KeyBinding::new("cmd-k", CommandPalette, None),
+		KeyBinding::new("cmd-m", ModelPalette, None),
+		KeyBinding::new("cmd-t", CycleThinking, None),
+		KeyBinding::new("cmd-shift-l", OpenAccounts, None),
+		KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+		KeyBinding::new("cmd-shift-]", NextTab, None),
+		KeyBinding::new("cmd-shift-[", PreviousTab, None),
+	]);
+
+	cx.set_menus(vec![
+		Menu::new("pi-desktop").items([
+			MenuItem::os_submenu("服务", SystemMenuType::Services),
+			MenuItem::separator(),
+			MenuItem::action("隐藏 pi-desktop", Hide),
+			MenuItem::action("隐藏其他", HideOthers),
+			MenuItem::action("全部显示", ShowAll),
+			MenuItem::separator(),
+			MenuItem::action("退出 pi-desktop", Quit),
+		]),
+		Menu::new("File").items([
+			MenuItem::action("新建会话（当前目录）", NewTab),
+			MenuItem::action("选择目录新建会话…", NewTabInDir),
+			MenuItem::separator(),
+			MenuItem::action("搜索会话", SearchSessions),
+			MenuItem::separator(),
+			MenuItem::action("关闭会话", CloseTab),
+		]),
+		Menu::new("Edit").items([
+			MenuItem::os_action("撤销", Undo, OsAction::Undo),
+			MenuItem::os_action("重做", Redo, OsAction::Redo),
+			MenuItem::separator(),
+			MenuItem::os_action("剪切", Cut, OsAction::Cut),
+			MenuItem::os_action("拷贝", Copy, OsAction::Copy),
+			MenuItem::os_action("粘贴", Paste, OsAction::Paste),
+			MenuItem::os_action("全选", SelectAll, OsAction::SelectAll),
+		]),
+		Menu::new("View").items([
+			MenuItem::action("命令面板…", CommandPalette),
+			MenuItem::action("切换模型…", ModelPalette),
+			MenuItem::action("循环思考档位", CycleThinking),
+			MenuItem::separator(),
+			MenuItem::action("显示 / 隐藏会话栏", ToggleSidebar),
+			MenuItem::action("状态面板", TogglePanel),
+			MenuItem::separator(),
+			MenuItem::action("账号与登录…", OpenAccounts),
+		]),
+		Menu::new("Window").items([
+			MenuItem::action("最小化", MinimizeWindow),
+			MenuItem::action("缩放", ZoomWindow),
+			MenuItem::action("进入全屏幕", ToggleFullScreen),
+			MenuItem::separator(),
+			MenuItem::action("显示上一个标签页", PreviousTab),
+			MenuItem::action("显示下一个标签页", NextTab),
+		]),
+	]);
+}
 
 pub struct Workspace {
 	/// Launch settings shared by every tab (`pi` path, `--session-dir`,
 	/// extra flags); `cwd` and `resume` are set per tab.
-	base:        SessionOptions,
-	default_cwd: PathBuf,
+	base:            SessionOptions,
+	default_cwd:     PathBuf,
 	/// Where saved sessions are listed from.
-	root:        Option<PathBuf>,
-	tabs:        Vec<Tab>,
-	active:      usize,
-	scan:        Scan,
+	root:            Option<PathBuf>,
+	tabs:            Vec<Tab>,
+	active:          usize,
+	scan:            Scan,
 	/// Shared with the background scan; caches parsed files.
-	scanner:     std::sync::Arc<std::sync::Mutex<Scanner>>,
-	search:      Entity<InputState>,
-	sidebar:     bool,
-	/// Sidebar groups the user folded, by cwd.
-	collapsed:   HashSet<PathBuf>,
+	scanner:         std::sync::Arc<std::sync::Mutex<Scanner>>,
+	search:          Entity<InputState>,
+	sidebar:         bool,
+	/// Sidebar groups the user unfolded, by cwd. Groups start folded.
+	unfolded:        HashSet<PathBuf>,
+	/// Sidebar groups expanded past [`GROUP_PREVIEW_SESSIONS`], by cwd.
+	expanded_groups: HashSet<PathBuf>,
 	/// The accounts modal, while open; it runs its own pi process.
-	accounts:    Option<(Entity<AccountsView>, Subscription)>,
+	accounts:        Option<(Entity<AccountsView>, Subscription)>,
 	/// The command palette (⌘K, or ⌘M for models only), while open.
-	palette:     Option<(Entity<PaletteView>, Subscription)>,
-	_tasks:      Vec<Task<()>>,
-	_subs:       Vec<Subscription>,
+	palette:         Option<(Entity<PaletteView>, Subscription)>,
+	_tasks:          Vec<Task<()>>,
+	_subs:           Vec<Subscription>,
 }
 
 struct Tab {
@@ -83,7 +190,8 @@ impl Workspace {
 			scanner: Default::default(),
 			search,
 			sidebar: true,
-			collapsed: HashSet::new(),
+			unfolded: HashSet::new(),
+			expanded_groups: HashSet::new(),
 			accounts: None,
 			palette: None,
 			_tasks: Vec::new(),
@@ -94,7 +202,9 @@ impl Workspace {
 			theme::appearance_changed(window, cx);
 		});
 		this._subs.push(appearance);
-		this.new_tab(cwd, window, cx);
+		// No tab at launch: starting pi is slow, so wait until the user opens
+		// a session. The search box takes focus so ⌘ shortcuts work at once.
+		this.search.update(cx, |state, cx| state.focus(window, cx));
 		let poll = cx.spawn(async move |this, cx| {
 			loop {
 				if this.update(cx, |this, cx| this.rescan(cx)).is_err() {
@@ -209,8 +319,8 @@ impl Workspace {
 		cx.notify();
 	}
 
-	/// Closes a tab and stops its pi process. The window always keeps one
-	/// tab: closing the last opens a new session in the same directory.
+	/// Closes a tab and stops its pi process. Closing the last one leaves the
+	/// empty state rather than starting another pi.
 	pub fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
 		if index >= self.tabs.len() {
 			return;
@@ -218,7 +328,9 @@ impl Workspace {
 		let tab = self.tabs.remove(index);
 		tab.view.update(cx, |view, cx| view.shutdown(cx));
 		if self.tabs.is_empty() {
-			self.new_tab(tab.summary.cwd, window, cx);
+			self.active = 0;
+			self.search.update(cx, |state, cx| state.focus(window, cx));
+			cx.notify();
 			return;
 		}
 		if index < self.active || self.active >= self.tabs.len() {
@@ -438,17 +550,11 @@ impl Workspace {
 		&self.scan.sessions
 	}
 
-	fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+	fn render_tab_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
 		let p = theme::palette(cx);
 		let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
 			let active = index == self.active;
-			let (dot, badge) = match tab.summary.status {
-				TabStatus::Connecting => (p.warning, None),
-				TabStatus::Idle => (p.success, None),
-				TabStatus::Running => (p.primary, Some("•••")),
-				TabStatus::Attention => (p.warning, Some("待确认")),
-				TabStatus::Disconnected => (p.danger, Some("已断开")),
-			};
+			let (dot, badge) = status_style(tab.summary.status, p);
 			div()
 				.id(("tab", index))
 				.flex()
@@ -482,6 +588,9 @@ impl Workspace {
 				.test_support()
 		});
 		TitleBar::new()
+			// The default left padding clears the traffic lights, which macOS
+			// hides in fullscreen; the bar adds its own small inset there.
+			.when(window.is_fullscreen(), |bar| bar.pl(px(0.)))
 			.child(
 				div()
 					.flex_1()
@@ -586,6 +695,30 @@ impl Workspace {
 		})
 	}
 
+	/// Shown when no tab is open: start a session in the default directory,
+	/// or pick one from the sidebar.
+	fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
+		let p = theme::palette(cx);
+		let cwd = self.default_cwd.clone();
+		div()
+			.id("empty-state")
+			.flex_1()
+			.min_w_0()
+			.h_full()
+			.flex()
+			.flex_col()
+			.items_center()
+			.justify_center()
+			.gap_3()
+			.child(div().text_color(rgb(p.muted_foreground)).child("从左侧选择会话继续，或新建会话"))
+			.child(
+				Button::new("empty-new")
+					.primary()
+					.label(format!("在 {} 新建会话  ⌘N", display_path(&cwd)))
+					.on_click(cx.listener(move |this, _, window, cx| this.new_tab(cwd.clone(), window, cx))),
+			)
+	}
+
 	fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
 		let p = theme::palette(cx);
 		let query = self.search.read(cx).value().to_string();
@@ -593,13 +726,19 @@ impl Workspace {
 		let groups = sessions::group(&self.scan.sessions, &query);
 		let active_tab = self.tabs.get(self.active);
 		let selected = active_tab.and_then(|tab| tab.summary.session_file.clone());
+		// Sessions open in a tab, with that tab's status, so the list mirrors the tab bar.
+		let open: HashMap<&Path, TabStatus> = self
+			.tabs
+			.iter()
+			.filter_map(|tab| tab.summary.session_file.as_deref().map(|file| (file, tab.summary.status)))
+			.collect();
 		let active_cwd = active_tab.map(|tab| tab.summary.cwd.as_path());
 		let now = SystemTime::now();
 		let mut row = 0usize;
 		let mut items: Vec<AnyElement> = Vec::new();
 		for (gi, group) in groups.iter().enumerate() {
 			let cwd = group.cwd.to_owned();
-			let folded = !searching && self.collapsed.contains(&cwd);
+			let folded = !searching && !self.unfolded.contains(&cwd);
 			let is_active_group = active_cwd == Some(group.cwd);
 			let (toggle, new_cwd) = (cwd.clone(), cwd.clone());
 			let icon = if folded { IconName::FolderClosed } else { IconName::FolderOpen };
@@ -634,20 +773,64 @@ impl Workspace {
 						}),
 					))
 					.on_click(cx.listener(move |this, _, _, cx| {
-						if !this.collapsed.remove(&toggle) {
-							this.collapsed.insert(toggle.clone());
+						if !this.unfolded.remove(&toggle) {
+							this.unfolded.insert(toggle.clone());
 						}
 						cx.notify();
 					}))
 					.test_support()
 					.into_any_element(),
 			);
+			// A folded group lists only its sessions with a run in progress
+			// (including one waiting on a dialog).
 			if folded {
+				for session in &group.sessions {
+					let status = open.get(session.path.as_path()).copied();
+					if matches!(status, Some(TabStatus::Running | TabStatus::Attention)) {
+						items.push(self.render_session(row, session, selected.as_deref(), status, now, p, cx));
+						row += 1;
+					}
+				}
 				continue;
 			}
-			for session in &group.sessions {
-				items.push(self.render_session(row, session, selected.as_deref(), now, p, cx));
+			let expanded = searching || self.expanded_groups.contains(&cwd);
+			// Folded previews still list sessions open in a tab.
+			let mut hidden = 0usize;
+			for (i, session) in group.sessions.iter().enumerate() {
+				let status = open.get(session.path.as_path()).copied();
+				if !expanded && i >= GROUP_PREVIEW_SESSIONS && status.is_none() {
+					hidden += 1;
+					continue;
+				}
+				items.push(self.render_session(row, session, selected.as_deref(), status, now, p, cx));
 				row += 1;
+			}
+			if !searching && (hidden > 0 || (expanded && group.sessions.len() > GROUP_PREVIEW_SESSIONS)) {
+				let more_cwd = cwd.clone();
+				items.push(
+					div()
+						.id(("group-more", gi))
+						.flex()
+						.items_center()
+						.h(px(28.))
+						.pl_7()
+						.pr_3()
+						.my_0p5()
+						.rounded(px(8.))
+						.text_xs()
+						.text_color(rgb(p.muted_foreground))
+						.cursor_pointer()
+						.hover(|s| s.bg(rgb(p.muted)).text_color(rgb(p.foreground)))
+						.child(if expanded { "收起".to_owned() } else { format!("展开其余 {hidden} 个") })
+						.on_click(cx.listener(move |this, _, _, cx| {
+							if !this.expanded_groups.remove(&more_cwd) {
+								this.expanded_groups.insert(more_cwd.clone());
+							}
+							cx.notify();
+						}))
+						.test_support()
+						.into_any_element(),
+				);
 			}
 		}
 		let empty = items.is_empty();
@@ -704,6 +887,7 @@ impl Workspace {
 		row: usize,
 		session: &SessionInfo,
 		selected: Option<&Path>,
+		open: Option<TabStatus>,
 		now: SystemTime,
 		p: &theme::Palette,
 		cx: &mut Context<Self>,
@@ -720,7 +904,7 @@ impl Workspace {
 			.items_center()
 			.gap_2()
 			.h(px(34.))
-			.pl_7()
+			.pl_2()
 			.pr_3()
 			.my_0p5()
 			.rounded(px(8.))
@@ -732,7 +916,16 @@ impl Workspace {
 					.font_weight(FontWeight::MEDIUM)
 			})
 			.when(!is_selected, |r| r.hover(|s| s.bg(rgb(p.muted))))
+			// Same dot as the tab bar while the session is open in a tab.
+			.child(
+				div().flex_none().w(px(12.)).flex().justify_center().when_some(open, |slot, status| {
+					slot.child(div().size(px(7.)).rounded_full().bg(rgb(status_style(status, p).0)))
+				}),
+			)
 			.child(div().flex_1().min_w_0().truncate().child(title))
+			.when_some(open.map(|status| status_style(status, p)), |row, (color, badge)| {
+				row.when_some(badge, |row, badge| row.child(div().flex_none().text_xs().text_color(rgb(color)).child(badge)))
+			})
 			.child(
 				div()
 					.flex_none()
@@ -756,7 +949,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-	fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+	fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
 		let p = theme::palette(cx);
 		let active = self.tabs.get(self.active).map(|tab| tab.view.clone());
 		div()
@@ -767,14 +960,40 @@ impl Render for Workspace {
 			.bg(rgb(p.background))
 			.text_color(cx.theme().foreground)
 			.capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.on_key(event, window, cx)))
-			.child(self.render_tab_bar(cx))
+			.on_action(cx.listener(|this, _: &NewTab, window, cx| this.run_command(Command::NewTab, window, cx)))
+			.on_action(cx.listener(|this, _: &NewTabInDir, window, cx| this.run_command(Command::NewTabInDir, window, cx)))
+			.on_action(cx.listener(|this, _: &CloseTab, window, cx| this.run_command(Command::CloseTab, window, cx)))
+			.on_action(cx.listener(|this, _: &SearchSessions, window, cx| this.run_command(Command::SearchSessions, window, cx)))
+			.on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.run_command(Command::ToggleSidebar, window, cx)))
+			.on_action(cx.listener(|this, _: &TogglePanel, window, cx| this.run_command(Command::TogglePanel, window, cx)))
+			.on_action(cx.listener(|this, _: &CommandPalette, window, cx| this.open_palette(false, window, cx)))
+			.on_action(cx.listener(|this, _: &ModelPalette, window, cx| this.open_palette(true, window, cx)))
+			.on_action(cx.listener(|this, _: &CycleThinking, window, cx| this.run_command(Command::CycleThinking, window, cx)))
+			.on_action(cx.listener(|this, _: &OpenAccounts, window, cx| this.open_accounts(window, cx)))
+			.on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
+			.on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
+			.on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
+			.on_action(cx.listener(|this, _: &NextTab, window, cx| {
+				if !this.tabs.is_empty() {
+					this.activate((this.active + 1) % this.tabs.len(), window, cx);
+				}
+			}))
+			.on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
+				if !this.tabs.is_empty() {
+					this.activate((this.active + this.tabs.len() - 1) % this.tabs.len(), window, cx);
+				}
+			}))
+			.child(self.render_tab_bar(window, cx))
 			.child(
 				div()
 					.flex_1()
 					.min_h_0()
 					.flex()
 					.when(self.sidebar, |row| row.child(self.render_sidebar(cx)))
-					.child(div().flex_1().min_w_0().h_full().relative().children(active)),
+					.child(match active {
+						Some(view) => div().flex_1().min_w_0().h_full().relative().child(view).into_any_element(),
+						None => self.render_empty(cx).into_any_element(),
+					}),
 			)
 			.when_some(self.palette.as_ref().map(|(view, _)| view.clone()), |root, view| {
 				root.child(
@@ -807,6 +1026,18 @@ impl Render for Workspace {
 	}
 }
 
+/// Dot color and optional badge for a tab's status, shared by the tab bar
+/// and the sidebar rows of open sessions.
+fn status_style(status: TabStatus, p: &theme::Palette) -> (u32, Option<&'static str>) {
+	match status {
+		TabStatus::Connecting => (p.warning, None),
+		TabStatus::Idle => (p.success, None),
+		TabStatus::Running => (p.primary, Some("•••")),
+		TabStatus::Attention => (p.warning, Some("待确认")),
+		TabStatus::Disconnected => (p.danger, Some("已断开")),
+	}
+}
+
 /// Directory basename for folder headers (falling back to `display_path`).
 fn folder_name(path: &Path) -> String {
 	path.file_name()
@@ -823,4 +1054,68 @@ fn display_path(path: &Path) -> String {
 		return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
 	}
 	path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+	use ::core::prelude::v1::test;
+	use gpui_kit::test::TestWindowExt as _;
+
+	use super::*;
+
+	#[gpui_kit::test]
+	async fn sidebar_folder_clips_past_five_sessions_and_toggles(cx: &mut TestAppContext) {
+		cx.executor().allow_parking();
+		cx.update(gpui_kit::init);
+		cx.update(crate::theme::apply);
+		cx.update(init_menus);
+		let menus = cx.update(|cx| cx.get_menus().unwrap_or_default());
+		assert!(menus.iter().any(|m| m.name.as_ref() == "Window"), "Window menu registered for macOS window controls");
+
+		let dir = std::env::temp_dir().join(format!("pi-desktop-sidebar-test-{}", std::process::id()));
+		_ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let base = SessionOptions { pi: PathBuf::from("/nonexistent-pi"), session_dir: Some(dir.clone()), ..Default::default() };
+		let cwd_a = PathBuf::from("/tmp/proj-a");
+		let cwd_b = PathBuf::from("/tmp/proj-b");
+		let make_session = |id: usize, cwd: &Path| SessionInfo {
+			id:       format!("s{id}"),
+			path:     dir.join(format!("s{id}.jsonl")),
+			cwd:      cwd.to_owned(),
+			title:    Some(format!("会话 {id}")),
+			created:  None,
+			parent:   None,
+			modified: SystemTime::UNIX_EPOCH + Duration::from_secs(100 + id as u64),
+		};
+		let mut sessions: Vec<SessionInfo> = (1..=7).map(|i| make_session(i, &cwd_a)).collect();
+		sessions.extend((8..=10).map(|i| make_session(i, &cwd_b)));
+
+		let (handle, view) = cx.update(|cx| {
+			gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| cx.new(|cx| Workspace::new(base, cwd_a.clone(), window, cx))).unwrap()
+		});
+		view.update(cx, |this, cx| {
+			this.scan = Scan { sessions, skipped: 0 };
+			cx.notify();
+		});
+		cx.update_window(handle, |_, window, cx| {
+			window.render_frame(cx);
+			// Groups start folded, and no session is running, so no rows.
+			assert!(window.try_find(("session-row", 0usize)).is_none(), "folded groups hide idle sessions");
+			window.click(("group", 0usize), cx);
+			window.click(("group", 1usize), cx);
+			// Group 0 (proj-a, 7 sessions) shows 5 + toggle; group 1 (proj-b, 3 sessions) has no toggle.
+			assert!(window.try_find(("group-more", 0usize)).is_some(), "7 sessions should show toggle");
+			assert!(window.try_find(("group-more", 1usize)).is_none(), "3 sessions should not show toggle");
+			assert!(window.try_find(("session-row", 7usize)).is_some(), "5 + 3 = 8 rows (0..=7) visible initially");
+			assert!(window.try_find(("session-row", 8usize)).is_none(), "9th row hidden until expanded");
+
+			window.click(("group-more", 0usize), cx);
+			assert!(window.try_find(("session-row", 9usize)).is_some(), "all 10 rows (0..=9) visible once expanded");
+
+			window.click(("group-more", 0usize), cx);
+			assert!(window.try_find(("session-row", 8usize)).is_none(), "collapsed back to 5 sessions");
+		})
+		.unwrap();
+		_ = std::fs::remove_dir_all(&dir);
+	}
 }

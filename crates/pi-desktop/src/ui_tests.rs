@@ -29,6 +29,7 @@ fn setup(cx: &mut TestAppContext) {
 	cx.executor().allow_parking();
 	cx.update(gpui_kit::init);
 	cx.update(crate::theme::apply);
+	cx.update(crate::workspace::init_menus);
 }
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -69,7 +70,14 @@ fn open_workspace(cx: &mut TestAppContext, sessions: &Path, cwd: &Path, args: &[
 	};
 	let cwd = cwd.to_owned();
 	cx.update(|cx| {
-		gpui_kit::open_window(window_options(1200., 800.), cx, |window, cx| cx.new(|cx| Workspace::new(base, cwd, window, cx)))
+		// The app starts with no tab; these tests start from one session.
+		gpui_kit::open_window(window_options(1200., 800.), cx, |window, cx| {
+			cx.new(|cx| {
+				let mut workspace = Workspace::new(base, cwd.clone(), window, cx);
+				workspace.new_tab(cwd, window, cx);
+				workspace
+			})
+		})
 			.expect("open window")
 	})
 }
@@ -425,7 +433,14 @@ async fn missing_credentials_point_to_login(cx: &mut TestAppContext) {
 	let base = SessionOptions { session_dir: Some(sessions.clone()), env, ..Default::default() };
 	let cwd = sessions.clone();
 	let (handle, workspace) = cx.update(|cx| {
-		gpui_kit::open_window(window_options(1200., 800.), cx, |window, cx| cx.new(|cx| Workspace::new(base, cwd, window, cx))).expect("open window")
+		gpui_kit::open_window(window_options(1200., 800.), cx, |window, cx| {
+			cx.new(|cx| {
+				let mut workspace = Workspace::new(base, cwd.clone(), window, cx);
+				workspace.new_tab(cwd, window, cx);
+				workspace
+			})
+		})
+		.expect("open window")
 	});
 	let tab = workspace.read_with(cx, |w, _| w.tab_views()[0].clone());
 	wait_until(cx, Duration::from_secs(60), "needs-login state", |cx| tab.read_with(cx, |v, _| v.needs_login()));
@@ -561,7 +576,8 @@ async fn shortcuts_open_switch_and_close_tabs(cx: &mut TestAppContext) {
 	wait_until(cx, Duration::from_secs(10), "closed tab's process exits", |_| !process_alive(first_pid));
 	press(cx, "secondary-w");
 	press(cx, "secondary-w");
-	assert_eq!(tabs(cx).0, 1, "closing the last tab leaves a fresh one");
+	assert_eq!(tabs(cx).0, 0, "closing the last tab starts no new pi");
+	press(cx, "secondary-n");
 	let fresh = workspace.read_with(cx, |w, _| w.tab_views()[0].clone());
 	wait_until(cx, Duration::from_secs(90), "fresh tab connects", |cx| fresh.read_with(cx, |v, _| v.is_connected()));
 	assert!(workspace.read_with(cx, |w, _| w.listed().is_empty()));
@@ -890,6 +906,7 @@ async fn external_session_is_listed_resumed_reconnected_and_forked(cx: &mut Test
 
 	cx.update_window(handle, |_, window, cx| {
 		window.render_frame(cx);
+		window.click(("group", 0usize), cx);
 		window.click(("session-row", 0usize), cx);
 	})
 	.unwrap();
