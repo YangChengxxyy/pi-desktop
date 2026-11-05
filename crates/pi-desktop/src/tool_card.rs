@@ -8,6 +8,7 @@ use pi_store::display::ToolArgs;
 use pi_store::tools::{Diff, LineKind, Status, ToolRun};
 use serde_json::{Map, Value};
 
+use crate::copy;
 use crate::theme::Palette;
 
 /// Lines of bash output or read content shown before "show more".
@@ -86,6 +87,22 @@ impl ToolCard<'_> {
 				.child(div().flex_none().text_color(rgb(p.danger)).child(format!("-{}", diff.removed)));
 		}
 		header = header.child(div().flex_none().text_color(rgb(status_color)).child(status));
+		// Copies the command itself (no `$ ` prompt) or the main argument.
+		let copy_arg = match (self.name, self.args) {
+			("bash", ToolArgs::Complete(args)) => args.get("command").and_then(Value::as_str).map(str::to_owned),
+			_ => Some(self.headline()),
+		}
+		.filter(|text| !text.trim().is_empty());
+		if let Some(text) = copy_arg {
+			let tooltip = if self.name == "bash" { "复制命令" } else { "复制" };
+			header = header.child(
+				div()
+					.flex_none()
+					.invisible()
+					.group_hover(copy::HOVER_GROUP, |s| s.visible())
+					.child(copy::button(("tool-copy-arg", self.id), text, tooltip)),
+			);
+		}
 
 		let (body, hidden_body) = match (self.name, self.run, &diff) {
 			(_, _, Some(diff)) => {
@@ -97,6 +114,7 @@ impl ToolCard<'_> {
 			(_, Some(run), _) if !run.output.trim().is_empty() => {
 				let (text, hidden) = clip_lines(&run.output, if self.expanded { usize::MAX } else { PREVIEW_LINES });
 				let body = div()
+					.relative()
 					.px_3()
 					.py_2()
 					.border_t_1()
@@ -106,6 +124,16 @@ impl ToolCard<'_> {
 					.text_xs()
 					.text_color(if failed { rgb(p.danger) } else { rgb(p.foreground) })
 					.child(text)
+					// The whole output, including lines folded away.
+					.child(
+						div()
+							.absolute()
+							.top_1()
+							.right_1()
+							.invisible()
+							.group_hover(copy::HOVER_GROUP, |s| s.visible())
+							.child(copy::button(("tool-copy-output", self.id), run.output.clone(), "复制输出")),
+					)
 					.into_any_element();
 				(Some(body), hidden)
 			},
@@ -132,6 +160,7 @@ impl ToolCard<'_> {
 
 		div()
 			.id(("tool-card", self.id))
+			.group(copy::HOVER_GROUP)
 			.rounded(px(8.))
 			.border_1()
 			.border_color(if failed { rgb(p.danger) } else { rgb(p.border) })
@@ -306,6 +335,15 @@ mod tests {
 			assert!(h2 > h1 + px(60.), "multiline bash command should expand header height (single={h1:?}, multi={h2:?})");
 			assert!(window.try_find(("tool-card-more", 2usize)).is_none(), "7-line command fits within PREVIEW_LINES");
 			assert!(window.try_find(("tool-card-more", 3usize)).is_some(), "20-line command shows expand toggle");
+
+			// Copy buttons: the bare command (no `$ `) and the full output.
+			window.hover(("tool-card", 2usize), cx);
+			window.click(("tool-copy-arg", 2usize), cx);
+			let copied = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+			assert!(copied.starts_with("cd ~/.pi/agent && python3"), "{copied:?}");
+			window.hover(("tool-card", 1usize), cx);
+			window.click(("tool-copy-output", 1usize), cx);
+			assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("patched: 63\n"));
 		})
 		.unwrap();
 	}

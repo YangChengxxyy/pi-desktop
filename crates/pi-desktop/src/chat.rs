@@ -11,7 +11,6 @@ use gpui_kit::component::input::{
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -24,7 +23,9 @@ use pi_store::display::{Block, Role, View};
 use serde_json::{Value, json};
 
 use crate::attachments;
+use crate::copy;
 use crate::dialog::{DialogEvent, DialogView};
+use crate::git;
 use crate::session::{Activity, Notice, PendingControl, Queue, QueueEdit, SessionModel};
 use crate::slash::{self, Builtin};
 use crate::status;
@@ -91,6 +92,8 @@ pub struct ChatView {
 	session_file: Option<PathBuf>,
 	model:        SessionModel,
 	stats:        Option<SessionStats>,
+	/// Branch and working-tree state of `cwd`; `None` outside a repository.
+	git:          Option<git::GitStatus>,
 	/// Choices for the status-bar menus, fetched once per connection.
 	models:       Vec<Model>,
 	thinking_levels: Vec<ThinkingLevel>,
@@ -120,6 +123,8 @@ pub struct ChatView {
 	pub(crate) aborts: usize,
 	_tasks:       Vec<Task<()>>,
 	_subs:        Vec<Subscription>,
+	/// Polls `git status`; kept apart from `_tasks`, which reconnects clear.
+	_git_poll:    Option<Task<()>>,
 }
 
 impl ChatView {
@@ -150,6 +155,7 @@ impl ChatView {
 			connection: Connection::Connecting,
 			model: SessionModel::default(),
 			stats: None,
+			git: None,
 			models: Vec::new(),
 			thinking_levels: Vec::new(),
 			panel: false,
@@ -167,8 +173,10 @@ impl ChatView {
 			aborts: 0,
 			_tasks: Vec::new(),
 			_subs: vec![sub],
+			_git_poll: None,
 		};
 		view.connect(cx);
+		view.start_git_poll(cx);
 		view
 	}
 
@@ -523,6 +531,30 @@ impl ChatView {
 			});
 		})
 		.detach();
+	}
+
+	/// Re-reads `git status` for `cwd` every few seconds, off the UI thread.
+	fn start_git_poll(&mut self, cx: &mut Context<Self>) {
+		const EVERY: Duration = Duration::from_secs(3);
+		let task = cx.spawn(async move |this, cx| {
+			loop {
+				let Ok(cwd) = this.update(cx, |this, _| this.cwd.clone()) else {
+					return;
+				};
+				let status = cx.background_spawn(crate::blocking::blocking(move || git::status(&cwd))).await;
+				let updated = this.update(cx, |this, cx| {
+					if this.git != status {
+						this.git = status;
+						cx.notify();
+					}
+				});
+				if updated.is_err() {
+					return;
+				}
+				cx.background_executor().timer(EVERY).await;
+			}
+		});
+		self._git_poll = Some(task);
 	}
 
 	fn show_next_dialog(&mut self, cx: &mut Context<Self>) {
@@ -1364,41 +1396,69 @@ impl ChatView {
 		let content = div().w_full().px_6();
 		match &view.role {
 			Role::Hidden => div().into_any_element(),
-			Role::User => content
-				.py_2()
-				.flex()
-				.justify_end()
-				.child(
-					div()
-						.max_w(px(760.))
-						.px_3()
-						.py_2()
-						.rounded(px(8.))
-						.bg(rgb(p.accent))
-						.text_sm()
-						.flex()
-						.flex_col()
-						.gap_2()
-						.children(view.blocks.iter().enumerate().map(|(bi, block)| match block {
-							Block::Text(text) => div().child(text.clone()).into_any_element(),
-							Block::Image { mime_type, data } => self.render_image(index, bi, mime_type, data, cx),
-							_ => div().into_any_element(),
-						})),
-				)
-				.into_any_element(),
-			Role::Assistant => content
-				.py_2()
-				.flex()
-				.flex_col()
-				.gap_2()
-				.children(view.blocks.iter().enumerate().map(|(bi, block)| self.render_block(index, bi, block, &view, cx)))
-				.when(view.streaming && view.blocks.is_empty(), |col| {
-					col.child(div().text_sm().text_color(rgb(p.muted_foreground)).child("思考中…"))
-				})
-				.when_some(view.error.clone(), |col, error| {
-					col.child(div().text_sm().text_color(rgb(p.danger)).child(format!("错误：{error}")))
-				})
-				.into_any_element(),
+			Role::User => {
+				let source = view.blocks.iter().filter_map(|b| if let Block::Text(t) = b { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n\n");
+				content
+					.py_2()
+					.flex()
+					.justify_end()
+					.items_start()
+					.gap_1()
+					.group(copy::HOVER_GROUP)
+					.when(!source.is_empty(), |row| {
+						row.child(
+							div()
+								.invisible()
+								.group_hover(copy::HOVER_GROUP, |s| s.visible())
+								.child(copy::button(("copy-user", index), source, "复制消息")),
+						)
+					})
+					.child(
+						div()
+							.max_w(px(760.))
+							.px_3()
+							.py_2()
+							.rounded(px(8.))
+							.bg(rgb(p.accent))
+							.text_sm()
+							.flex()
+							.flex_col()
+							.gap_2()
+							.children(view.blocks.iter().enumerate().map(|(bi, block)| match block {
+								Block::Text(text) => div().child(text.clone()).into_any_element(),
+								Block::Image { mime_type, data } => self.render_image(index, bi, mime_type, data, cx),
+								_ => div().into_any_element(),
+							})),
+					)
+					.into_any_element()
+			},
+			Role::Assistant => {
+				// The reply's Markdown source, without thinking or tool calls.
+				let source = view.blocks.iter().filter_map(|b| if let Block::Text(t) = b { Some(t.trim()) } else { None }).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
+				content
+					.py_2()
+					.flex()
+					.flex_col()
+					.gap_2()
+					.group(copy::HOVER_GROUP)
+					.children(view.blocks.iter().enumerate().map(|(bi, block)| self.render_block(index, bi, block, &view, cx)))
+					.when(view.streaming && view.blocks.is_empty(), |col| {
+						col.child(div().text_sm().text_color(rgb(p.muted_foreground)).child("思考中…"))
+					})
+					.when_some(view.error.clone(), |col, error| {
+						col.child(div().text_sm().text_color(rgb(p.danger)).child(format!("错误：{error}")))
+					})
+					.when(!view.streaming && !source.is_empty(), |col| {
+						col.child(
+							div()
+								.flex()
+								.invisible()
+								.group_hover(copy::HOVER_GROUP, |s| s.visible())
+								.child(copy::button(("copy-reply", index), source, "复制回复（Markdown）")),
+						)
+					})
+					.into_any_element()
+			},
 			Role::Command => {
 				let text = view.blocks.iter().filter_map(|b| if let Block::Output(t) = b { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n");
 				content
@@ -1406,6 +1466,8 @@ impl ChatView {
 					.child(
 						div()
 							.id(("command-output", index))
+							.relative()
+							.group(copy::HOVER_GROUP)
 							.rounded(px(6.))
 							.border_l_2()
 							.border_color(rgb(p.border))
@@ -1415,7 +1477,16 @@ impl ChatView {
 							.font_family("Menlo")
 							.text_xs()
 							.text_color(rgb(p.muted_foreground))
-							.child(text)
+							.child(text.clone())
+							.child(
+								div()
+									.absolute()
+									.top_1()
+									.right_1()
+									.invisible()
+									.group_hover(copy::HOVER_GROUP, |s| s.visible())
+									.child(copy::button(("copy-command", index), text, "复制输出")),
+							)
 							.test_support(),
 					)
 					.into_any_element()
@@ -1449,7 +1520,7 @@ impl ChatView {
 										.px_3()
 										.pb_2()
 										.text_sm()
-										.child(TextView::markdown(ElementId::NamedInteger("summary-md".into(), index as u64), text)),
+										.child(copy::markdown(ElementId::NamedInteger("summary-md".into(), index as u64), text)),
 								)
 							}),
 					)
@@ -1590,7 +1661,7 @@ impl ChatView {
 			Block::Text(text) => div()
 				.w_full()
 				.text_sm()
-				.child(TextView::markdown(ElementId::NamedInteger("md".into(), (row * 64 + bi) as u64), text.clone()))
+				.child(copy::markdown(ElementId::NamedInteger("md".into(), (row * 64 + bi) as u64), text.clone()))
 				.into_any_element(),
 			Block::Thinking(text) => {
 				let open = self.expanded.contains(&(row, bi));
@@ -1797,6 +1868,34 @@ impl ChatView {
 			.text_color(rgb(p.muted_foreground))
 			.child(div().flex().items_center().gap_1().child(div().size(px(7.)).rounded_full().bg(rgb(dot))).child(label))
 			.child(div().min_w_0().truncate().child(self.cwd.display().to_string()))
+			.when_some(self.git.as_ref(), |row, git| {
+				let sync = git.sync_label();
+				let changes = git.changes_label();
+				let changes_color = if git.conflicted > 0 {
+					p.danger
+				} else if git.is_clean() {
+					p.success
+				} else {
+					p.warning
+				};
+				row.child(
+					div()
+						.id("status-git")
+						.flex_none()
+						.flex()
+						.items_center()
+						.gap_1p5()
+						.max_w(px(320.))
+						.child(div().min_w_0().truncate().child(format!("⎇ {}", git.head_label())))
+						.when(!sync.is_empty(), |d| d.child(div().flex_none().text_color(rgb(p.primary)).child(sync)))
+						.child(div().flex_none().text_color(rgb(changes_color)).child(changes))
+						.tooltip({
+							let text = git.tooltip();
+							move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+						})
+						.test_support(),
+				)
+			})
 			.child(div().flex_1())
 			.when(!statuses.is_empty(), |row| {
 				row.child(div().id("status-extensions").max_w(px(360.)).truncate().child(statuses.join(" · ")).test_support())
