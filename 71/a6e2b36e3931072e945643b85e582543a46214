@@ -1,0 +1,27 @@
+crates/pi-desktop/src/main.rs
+  s_f11154b2db49da::t_6ad6e4100a8501 9,11
+crates/pi-desktop/src/copy.rs
+  s_f11154b2db49da::t_6ad6e4100a8501 1-24
+crates/pi-desktop/src/git.rs
+  s_f11154b2db49da::t_6ad6e4100a8501 1-163
+crates/pi-desktop/src/chat.rs
+  s_f11154b2db49da::t_6ad6e4100a8501 26,28,95-96,126-127,158,176,179,536-559,1399-1461,1469-1470,1480-1489,1523,1664,1871-1898
+crates/pi-desktop/src/tool_card.rs
+  s_f11154b2db49da::t_6ad6e4100a8501 11,90-105,117,127-136,163,338-346
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.52-trip",
+  "base_commit_sha": "71a6e2b36e3931072e945643b85e582543a46214",
+  "prompts": {},
+  "sessions": {
+    "s_f11154b2db49da": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1aae4-b767-75f2-a690-888dc261c232",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "YangChengxxyy <853364106@qq.com>"
+    }
+  }
+}
