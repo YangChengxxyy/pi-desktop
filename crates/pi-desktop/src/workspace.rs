@@ -3,7 +3,7 @@
 //!
 //! Shortcuts: ⌘N new tab · ⌘W close tab · ⌘1–9 switch tab · ⌘P search
 //! sessions · ⌘B toggle the sidebar · ⌘J status panel · ⌘K command palette
-//! · ⌘M pick a model · ⌘T cycle the thinking level · ⌘⇧L accounts.
+//! · ⌘M pick a model · ⌘T cycle the thinking level · ⌘⇧L accounts · ⌘, settings.
 
 use std::{
 	collections::{HashMap, HashSet},
@@ -25,6 +25,7 @@ use crate::accounts::{AccountsEvent, AccountsView};
 use crate::chat::{ChatEvent, ChatView, TabStatus, TabSummary};
 use crate::palette::{Command, Entry, Group};
 use crate::palette_view::{PaletteEvent, PaletteView};
+use crate::settings::{SettingsEvent, SettingsView};
 use crate::theme::{self, ThemeChoice};
 
 /// The session directory has no change notification we rely on; a rescan
@@ -51,6 +52,7 @@ actions!(
 		ModelPalette,
 		CycleThinking,
 		OpenAccounts,
+		OpenSettings,
 		MinimizeWindow,
 		ZoomWindow,
 		ToggleFullScreen,
@@ -84,6 +86,7 @@ pub fn init_menus(cx: &mut App) {
 		KeyBinding::new("cmd-m", ModelPalette, None),
 		KeyBinding::new("cmd-t", CycleThinking, None),
 		KeyBinding::new("cmd-shift-l", OpenAccounts, None),
+		KeyBinding::new("cmd-,", OpenSettings, None),
 		KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
 		KeyBinding::new("cmd-shift-]", NextTab, None),
 		KeyBinding::new("cmd-shift-[", PreviousTab, None),
@@ -91,6 +94,8 @@ pub fn init_menus(cx: &mut App) {
 
 	cx.set_menus(vec![
 		Menu::new("pi-desktop").items([
+			MenuItem::action("设置…", OpenSettings),
+			MenuItem::separator(),
 			MenuItem::os_submenu("服务", SystemMenuType::Services),
 			MenuItem::separator(),
 			MenuItem::action("隐藏 pi-desktop", Hide),
@@ -159,6 +164,8 @@ pub struct Workspace {
 	accounts:        Option<(Entity<AccountsView>, Subscription)>,
 	/// The command palette (⌘K, or ⌘M for models only), while open.
 	palette:         Option<(Entity<PaletteView>, Subscription)>,
+	/// The settings modal (⌘,), while open.
+	settings:        Option<(Entity<SettingsView>, Subscription)>,
 	_tasks:          Vec<Task<()>>,
 	_subs:           Vec<Subscription>,
 }
@@ -194,6 +201,7 @@ impl Workspace {
 			expanded_groups: HashSet::new(),
 			accounts: None,
 			palette: None,
+			settings: None,
 			_tasks: Vec::new(),
 			_subs: vec![sub],
 		};
@@ -384,10 +392,38 @@ impl Workspace {
 		cx.notify();
 	}
 
+	pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+		if self.settings.is_some() {
+			return;
+		}
+		self.palette = None;
+		let cwd = self.tabs.get(self.active).map_or(self.default_cwd.clone(), |tab| tab.summary.cwd.clone());
+		let recent = self.known_cwds();
+		let view = cx.new(|cx| SettingsView::new(&self.base, cwd, recent, window, cx));
+		let sub = cx.subscribe_in(&view, window, |this, _, event: &SettingsEvent, window, cx| match event {
+			SettingsEvent::Close => this.close_settings(window, cx),
+			SettingsEvent::DefaultCwd(dir) => {
+				this.default_cwd = dir.clone().or_else(crate::launch_env::home_dir).unwrap_or_else(|| this.default_cwd.clone());
+				cx.notify();
+			},
+		});
+		self.settings = Some((view, sub));
+		cx.notify();
+	}
+
+	fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+		if self.settings.take().is_some()
+			&& let Some(view) = self.tabs.get(self.active).map(|tab| tab.view.clone())
+		{
+			view.update(cx, |view, cx| view.focus_composer(window, cx));
+		}
+		cx.notify();
+	}
+
 	/// ⌘K: window actions plus the active tab's models, levels, commands.
 	/// ⌘M: the same palette narrowed to models.
 	pub fn open_palette(&mut self, models_only: bool, window: &mut Window, cx: &mut Context<Self>) {
-		if self.palette.is_some() || self.accounts.is_some() {
+		if self.palette.is_some() || self.accounts.is_some() || self.settings.is_some() {
 			return;
 		}
 		let tab = self.tabs.get(self.active).map(|tab| tab.view.read(cx).palette_entries()).unwrap_or_default();
@@ -405,6 +441,7 @@ impl Workspace {
 				Entry::new(Group::Action, "循环思考档位", Command::CycleThinking).detail("cycle thinking").shortcut("⌘T"),
 				Entry::new(Group::Action, "压缩上下文", Command::Compact).detail("compact"),
 				Entry::new(Group::Action, "账号与登录", Command::Accounts).detail("accounts login logout").shortcut("⌘⇧L"),
+				Entry::new(Group::Action, "设置", Command::Settings).detail("settings preferences launch directory cwd theme packages install").shortcut("⌘,"),
 			];
 			entries.extend(ThemeChoice::ALL.map(|choice| {
 				Entry::new(Group::Action, format!("主题：{}", choice.label()), Command::Theme(choice))
@@ -451,6 +488,7 @@ impl Workspace {
 				cx.notify();
 			},
 			Command::Accounts => self.open_accounts(window, cx),
+			Command::Settings => self.open_settings(window, cx),
 			Command::Theme(choice) => theme::set_choice(choice, window, cx),
 			command => {
 				if let Some(view) = self.tabs.get(self.active).map(|tab| tab.view.clone()) {
@@ -463,6 +501,11 @@ impl Workspace {
 	#[cfg(test)]
 	pub(crate) fn palette_view(&self) -> Option<Entity<PaletteView>> {
 		self.palette.as_ref().map(|(view, _)| view.clone())
+	}
+
+	#[cfg(test)]
+	pub(crate) fn settings_view(&self) -> Option<Entity<SettingsView>> {
+		self.settings.as_ref().map(|(view, _)| view.clone())
 	}
 
 	#[cfg(test)]
@@ -482,6 +525,11 @@ impl Workspace {
 		let modifiers = &keystroke.modifiers;
 		if keystroke.key == "escape" && self.accounts.is_some() {
 			self.close_accounts(window, cx);
+			cx.stop_propagation();
+			return;
+		}
+		if keystroke.key == "escape" && self.settings.is_some() {
+			self.close_settings(window, cx);
 			cx.stop_propagation();
 			return;
 		}
@@ -619,6 +667,13 @@ impl Workspace {
 							menu
 						})
 				}).child(
+					Button::new("settings-open")
+						.ghost()
+						.xsmall()
+						.label("设置")
+						.tooltip("启动目录、外观、pi 包（⌘,）")
+						.on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
+				).child(
 					Button::new("accounts-open")
 						.ghost()
 						.xsmall()
@@ -970,6 +1025,7 @@ impl Render for Workspace {
 			.on_action(cx.listener(|this, _: &ModelPalette, window, cx| this.open_palette(true, window, cx)))
 			.on_action(cx.listener(|this, _: &CycleThinking, window, cx| this.run_command(Command::CycleThinking, window, cx)))
 			.on_action(cx.listener(|this, _: &OpenAccounts, window, cx| this.open_accounts(window, cx)))
+			.on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
 			.on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
 			.on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
 			.on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
@@ -1007,6 +1063,20 @@ impl Render for Workspace {
 						.pt(px(96.))
 						.bg(hsla(0., 0., 0., 0.2))
 						.on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.close_palette(window, cx)))
+						.child(view),
+				)
+			})
+			.when_some(self.settings.as_ref().map(|(view, _)| view.clone()), |root, view| {
+				root.child(
+					div()
+						.id("settings-overlay")
+						.absolute()
+						.inset_0()
+						.flex()
+						.items_center()
+						.justify_center()
+						.bg(hsla(0., 0., 0., 0.35))
+						.on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.close_settings(window, cx)))
 						.child(view),
 				)
 			})
@@ -1116,6 +1186,100 @@ mod tests {
 			assert!(window.try_find(("session-row", 8usize)).is_none(), "collapsed back to 5 sessions");
 		})
 		.unwrap();
+		_ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// ⌘, opens settings; the nav switches pages; a theme card applies the
+	/// theme; the package page lists through `pi list` (a stub script here),
+	/// installs and removes after confirming; Esc closes.
+	#[gpui_kit::test]
+	async fn settings_panel_pages_theme_and_packages(cx: &mut TestAppContext) {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		use crate::settings::Page;
+		use crate::theme::ThemeChoice;
+
+		cx.executor().allow_parking();
+		cx.update(gpui_kit::init);
+		cx.update(crate::theme::apply);
+		cx.update(init_menus);
+
+		let dir = std::env::temp_dir().join(format!("pi-desktop-settings-test-{}", std::process::id()));
+		_ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		// A stand-in `pi` that keeps its package list in a file.
+		let state = dir.join("packages");
+		std::fs::write(&state, "npm:@foo/bar\n").unwrap();
+		let pi = dir.join("pi");
+		std::fs::write(
+			&pi,
+			format!(
+				"#!/bin/sh\nS='{}'\ncase \"$1\" in\n list) echo 'User packages:'; while read -r l; do echo \"  $l\"; done < \"$S\";;\n install) echo \"$2\" >> \"$S\";;\n remove) grep -v -x \"$2\" \"$S\" > \"$S.t\"; mv \"$S.t\" \"$S\";;\n update) ;;\n *) exit 1;;\nesac\n",
+				state.display()
+			),
+		)
+		.unwrap();
+		std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+		let base = SessionOptions { pi, session_dir: Some(dir.clone()), ..Default::default() };
+		let cwd = dir.clone();
+		let (handle, workspace) = cx.update(|cx| {
+			gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| cx.new(|cx| Workspace::new(base, cwd, window, cx))).unwrap()
+		});
+		cx.update_window(handle, |_, window, cx| {
+			window.render_frame(cx);
+			window.click("settings-open", cx);
+			window.render_frame(cx);
+		})
+		.unwrap();
+		let settings = workspace.read_with(cx, |w, _| w.settings_view()).expect("settings opened");
+		assert_eq!(settings.read_with(cx, |v, _| v.page()), Page::General);
+
+		cx.update_window(handle, |_, window, cx| {
+			assert!(window.try_find("settings-cwd").is_some());
+			window.click("settings-nav-appearance", cx);
+			window.render_frame(cx);
+			window.click("settings-theme-dark", cx);
+			window.render_frame(cx);
+		})
+		.unwrap();
+		assert_eq!(cx.update(|cx| crate::theme::choice(cx)), ThemeChoice::Dark);
+
+		cx.update_window(handle, |_, window, cx| {
+			window.click("settings-nav-packages", cx);
+			window.render_frame(cx);
+		})
+		.unwrap();
+		let wait = |cx: &mut TestAppContext, what: &str, done: &dyn Fn(&crate::settings::SettingsView) -> bool| {
+			let deadline = std::time::Instant::now() + Duration::from_secs(10);
+			while !settings.read_with(cx, |v, _| done(v)) {
+				assert!(std::time::Instant::now() < deadline, "timed out waiting for: {what}");
+				cx.run_until_parked();
+				std::thread::sleep(Duration::from_millis(20));
+			}
+		};
+		wait(cx, "listed", &|v| !v.busy() && v.packages().is_some_and(|p| p.len() == 1));
+
+		cx.update_window(handle, |_, window, cx| {
+			settings.update(cx, |v, cx| v.install_source("git:github.com/u/r", window, cx));
+		})
+		.unwrap();
+		wait(cx, "installed", &|v| !v.busy() && v.packages().is_some_and(|p| p.len() == 2));
+		assert!(matches!(settings.read_with(cx, |v, _| v.notice().cloned()), Some(crate::settings::Notice::Info(_))));
+
+		cx.update_window(handle, |_, window, cx| {
+			window.render_frame(cx);
+			window.click(("package-remove", 0usize), cx);
+			window.render_frame(cx);
+			window.click(("package-confirm", 0usize), cx);
+			window.render_frame(cx);
+		})
+		.unwrap();
+		wait(cx, "removed", &|v| !v.busy() && v.packages().is_some_and(|p| p.len() == 1));
+		assert_eq!(settings.read_with(cx, |v, _| v.packages().unwrap()[0].source.clone()), "git:github.com/u/r");
+
+		cx.update_window(handle, |_, window, cx| window.press("escape", cx)).unwrap();
+		assert!(workspace.read_with(cx, |w, _| w.settings_view()).is_none(), "Esc closes settings");
 		_ = std::fs::remove_dir_all(&dir);
 	}
 }

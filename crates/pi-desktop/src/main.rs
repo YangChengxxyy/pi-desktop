@@ -11,9 +11,11 @@ mod dialog;
 mod git;
 mod launch_env;
 mod login;
+mod packages;
 mod palette;
 mod palette_view;
 mod session;
+mod settings;
 mod slash;
 mod status;
 mod theme;
@@ -34,24 +36,41 @@ fn main() {
 		session_dir: args.session_dir,
 		..Default::default()
 	};
-	gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+	let reopen_options = options.clone();
+	let reopen_cwd = args.cwd.clone();
+	let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+	// Dock click / app re-launch while running: reopen a window when none is
+	// visible (e.g. the user closed the only window but the app keeps running
+	// in the background).
+	app.on_reopen(move |cx| {
+		if cx.windows().is_empty() {
+			open_main_window(reopen_options.clone(), reopen_cwd.clone(), cx);
+		}
+		cx.activate(true);
+	});
+	app.run(move |cx| {
 		gpui_kit::init(cx);
 		theme::apply(cx);
 		workspace::init_menus(cx);
-		let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
-		let window = WindowOptions {
-			window_bounds: Some(WindowBounds::Windowed(bounds)),
-			window_min_size: Some(size(px(900.), px(560.))),
-			..TitleBar::window_options()
-		};
-		let cwd = args.cwd.clone();
-		gpui_kit::open_window(window, cx, |window, cx| {
-			cx.new(|cx| workspace::Workspace::new(options, cwd, window, cx))
-		})
-		.expect("open window");
-		cx.activate(true);
+		open_main_window(options, args.cwd, cx);
 	});
 }
+
+/// Open the main workspace window with a single new-session tab.
+fn open_main_window(options: pi_bridge::SessionOptions, cwd: PathBuf, cx: &mut App) {
+	let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
+	let window = WindowOptions {
+		window_bounds: Some(WindowBounds::Windowed(bounds)),
+		window_min_size: Some(size(px(900.), px(560.))),
+		..TitleBar::window_options()
+	};
+	gpui_kit::open_window(window, cx, move |window, cx| {
+		cx.new(|cx| workspace::Workspace::new(options, cwd, window, cx))
+	})
+	.expect("open window");
+	cx.activate(true);
+}
+
 
 struct Args {
 	cwd:         PathBuf,
