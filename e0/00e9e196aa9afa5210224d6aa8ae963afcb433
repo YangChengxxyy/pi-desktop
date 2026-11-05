@@ -1,0 +1,31 @@
+docs/design/settings.html
+  s_44283ca615dc5b::t_5f52f7e7853ee4 1606-1619
+  s_44283ca615dc5b::t_8288c0cb8cf3ed 1-1605,1620-1621
+crates/pi-desktop/src/main.rs
+  s_44283ca615dc5b::t_68afd01f0a71a2 14,18
+crates/pi-desktop/src/settings.rs
+  s_44283ca615dc5b::t_f0541aecc9c080 1-103,106-231,233-605,607-706
+crates/pi-desktop/src/packages.rs
+  s_44283ca615dc5b::t_7845140bfa1c12 1-186
+crates/pi-desktop/src/palette.rs
+  s_44283ca615dc5b::t_68afd01f0a71a2 15
+crates/pi-desktop/src/workspace.rs
+  s_44283ca615dc5b::t_68afd01f0a71a2 6,28,55,89,97-98,167-168,204,395-422,426,444,491,506-510,531-535,670-676,1028,1069-1079
+  s_44283ca615dc5b::t_5d9a659f60f604 1191-1284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.52-trip",
+  "base_commit_sha": "e000e9e196aa9afa5210224d6aa8ae963afcb433",
+  "prompts": {},
+  "sessions": {
+    "s_44283ca615dc5b": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1ab5d-de88-7559-a0de-b4de692c4edb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "YangChengxxyy <853364106@qq.com>"
+    }
+  }
+}
